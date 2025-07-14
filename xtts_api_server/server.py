@@ -1,5 +1,5 @@
 from TTS.api import TTS
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Query, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse,StreamingResponse
 
@@ -15,6 +15,9 @@ from loguru import logger
 from argparse import ArgumentParser
 from pathlib import Path
 from uuid import uuid4
+import tempfile
+import io
+import json
 
 from xtts_api_server.tts_funcs import TTSWrapper,supported_languages,InvalidSettingsError
 from xtts_api_server.RealtimeTTS import TextToAudioStream, CoquiEngine
@@ -157,6 +160,15 @@ class TTSStreamRequest(BaseModel):
     speaker_wav: Optional[str] = None
     language: str
     save_path: Optional[str] = None
+
+class CreateLatentsRequest(BaseModel):
+    speaker_name: str
+    language: str
+
+class StoreLatentsRequest(BaseModel):
+    speaker_name: str
+    language: str
+    latents: dict  # Should contain 'gpt_cond_latent' and 'speaker_embedding' keys
 
 @app.get("/speakers_list")
 def get_speakers():
@@ -358,6 +370,96 @@ async def tts_to_file(request: SynthesisFileRequest):
     except Exception as e:
         logger.error(e)
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+@app.post("/create_latents")
+async def create_latents(request: CreateLatentsRequest, wav_file: UploadFile = File(...)):
+    try:
+        # Validate language code
+        if request.language.lower() not in supported_languages:
+            raise HTTPException(status_code=400, 
+                              detail="Language code sent is either unsupported or misspelled.")
+        
+        # Create temporary file for the uploaded wav
+        temp_audio_name = next(tempfile._get_candidate_names()) + ".wav"
+        temp_audio_path = os.path.join(tempfile.gettempdir(), temp_audio_name)
+        
+        # Write uploaded file to temporary location
+        with open(temp_audio_path, "wb") as temp_file:
+            content = await wav_file.read()
+            temp_file.write(content)
+        
+        # Generate latents using XTTS model
+        gpt_cond_latent, speaker_embedding = XTTS.model.get_conditioning_latents(temp_audio_path)
+        
+        # Convert to lists for JSON serialization
+        latents_data = {
+            "gpt_cond_latent": gpt_cond_latent.cpu().squeeze().half().tolist(),
+            "speaker_embedding": speaker_embedding.cpu().squeeze().half().tolist()
+        }
+        
+        # Save latents to JSON file
+        language_folder = os.path.join(XTTS.latent_speaker_folder, request.language.lower())
+        os.makedirs(language_folder, exist_ok=True)
+        
+        json_file_path = os.path.join(language_folder, f"{request.speaker_name.lower()}.json")
+        with open(json_file_path, 'w') as json_file:
+            json.dump(latents_data, json_file)
+        
+        # Clean up temporary file
+        os.unlink(temp_audio_path)
+        
+        logger.info(f"Latents created and saved for {request.speaker_name} in {request.language}")
+        
+        return {
+            "message": f"Latents created and saved for speaker '{request.speaker_name}' in language '{request.language}'",
+            "latents": latents_data,
+            "file_path": json_file_path
+        }
+        
+    except Exception as e:
+        # Clean up temporary file if it exists
+        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+            os.unlink(temp_audio_path)
+        logger.error(f"Error creating latents: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating latents: {str(e)}")
+
+@app.post("/store_latents")
+async def store_latents(request: StoreLatentsRequest):
+    try:
+        # Validate language code
+        if request.language.lower() not in supported_languages:
+            raise HTTPException(status_code=400, 
+                              detail="Language code sent is either unsupported or misspelled.")
+        
+        # Validate latents structure
+        if not isinstance(request.latents, dict):
+            raise HTTPException(status_code=400, detail="Latents must be a dictionary")
+        
+        required_keys = ["gpt_cond_latent", "speaker_embedding"]
+        for key in required_keys:
+            if key not in request.latents:
+                raise HTTPException(status_code=400, 
+                                  detail=f"Missing required key '{key}' in latents")
+        
+        # Create language folder if it doesn't exist
+        language_folder = os.path.join(XTTS.latent_speaker_folder, request.language.lower())
+        os.makedirs(language_folder, exist_ok=True)
+        
+        # Save latents to JSON file (will replace if exists)
+        json_file_path = os.path.join(language_folder, f"{request.speaker_name.lower()}.json")
+        with open(json_file_path, 'w') as json_file:
+            json.dump(request.latents, json_file)
+        
+        logger.info(f"Latents stored for {request.speaker_name} in {request.language} at {json_file_path}")
+        
+        return {
+            "message": f"Latents stored for speaker '{request.speaker_name}' in language '{request.language}'",
+            "file_path": json_file_path
+        }
+        
+    except Exception as e:
+        logger.error(f"Error storing latents: {e}")
+        raise HTTPException(status_code=500, detail=f"Error storing latents: {str(e)}")
 
 @app.on_event("startup")
 async def show_disclaimer():
