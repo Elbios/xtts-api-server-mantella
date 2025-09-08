@@ -452,6 +452,71 @@ async def store_latents(request: StoreLatentsRequest):
         logger.error(f"Error storing latents: {e}")
         raise HTTPException(status_code=500, detail=f"Error storing latents: {str(e)}")
 
+@app.post("/create_and_store_latents")
+async def create_and_store_latents(
+    speaker_name: str = Form(...),
+    language: str = Form(...),
+    wav_file: UploadFile = File(...)
+):
+    try:
+        # Validate language code
+        if language.lower() not in supported_languages:
+            raise HTTPException(status_code=400,
+                                detail="Language code sent is either unsupported or misspelled.")
+
+        # Create temporary file for the uploaded wav
+        temp_audio_name = next(tempfile._get_candidate_names()) + ".wav"
+        temp_audio_path = os.path.join(tempfile.gettempdir(), temp_audio_name)
+
+        # Write uploaded file to temporary location
+        with open(temp_audio_path, "wb") as temp_file:
+            content = await wav_file.read()
+            temp_file.write(content)
+
+        # Generate latents using XTTS model
+        gpt_cond_latent, speaker_embedding = XTTS.model.get_conditioning_latents(temp_audio_path)
+
+        # Convert to lists for JSON serialization in canonical (no-squeeze) shape
+        latents_data = {
+            "gpt_cond_latent": gpt_cond_latent.cpu().half().tolist(),
+            "speaker_embedding": speaker_embedding.cpu().half().tolist()
+        }
+
+        # Ensure language folder exists in the latents directory
+        language_folder = os.path.join(XTTS.latent_speaker_folder, language.lower())
+        os.makedirs(language_folder, exist_ok=True)
+
+        # Save latents to JSON file (will replace if exists)
+        json_file_path = os.path.join(language_folder, f"{speaker_name.lower()}.json")
+        with open(json_file_path, 'w') as json_file:
+            json.dump(latents_data, json_file)
+
+        # Hot-load latents into cache so they are immediately usable
+        try:
+            loaded_gpt_cond_latent, loaded_speaker_embedding = XTTS.load_latents_from_json(json_file_path)
+            cache_key = f"{speaker_name.lower()}_{language.lower()}"
+            XTTS.latents_cache[cache_key] = (loaded_gpt_cond_latent, loaded_speaker_embedding)
+            logger.info(f"Latents hot-loaded into cache for {cache_key}")
+        except Exception as e:
+            logger.error(f"Failed to hot-load latents into cache: {e}")
+
+        # Clean up temporary file
+        os.unlink(temp_audio_path)
+
+        logger.info(f"Latents created and stored for {speaker_name} in {language} at {json_file_path}")
+
+        return {
+            "message": f"Latents stored for speaker '{speaker_name}' in language '{language}'",
+            "file_path": json_file_path
+        }
+
+    except Exception as e:
+        # Clean up temporary file if it exists
+        if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
+            os.unlink(temp_audio_path)
+        logger.error(f"Error creating and storing latents: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating and storing latents: {str(e)}")
+
 @app.on_event("startup")
 async def show_disclaimer():
     disclaimer_message = """
