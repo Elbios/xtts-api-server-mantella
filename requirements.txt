@@ -15,3 +15,4 @@ fugashi[unidic-lite]
 tts==0.21.3
 transformers==4.36.2
 spacy==3.7.4
+python-multipart

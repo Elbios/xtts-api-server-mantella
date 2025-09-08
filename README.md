@@ -31,6 +31,15 @@ pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://downl
 python -m xtts_api_server
  
 ```
+NOTE: on Windows, I had to first do:
+
+```bash
+python -m pip install --upgrade pip wheel setuptools
+pip install torch==2.1.1+cu118 torchaudio==2.1.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+
+```
+then remove torch and torchaudio from requirements.txt and pip install -r requirements.txt
+
 ## Mantella specific
 
 Don't forget to add the folder \plugins\lip_fuz in the root folder so Mantella can find it when you pass the argument in config.ini (xtts_server_folder)
