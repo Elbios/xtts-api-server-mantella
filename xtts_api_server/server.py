@@ -382,10 +382,10 @@ async def create_latents(wav_file: UploadFile = File(...)):
         # Generate latents using XTTS model
         gpt_cond_latent, speaker_embedding = XTTS.model.get_conditioning_latents(temp_audio_path)
 
-        # Convert to lists for JSON serialization
+        # Convert to lists for JSON serialization in canonical (no-squeeze) shape
         latents_data = {
-            "gpt_cond_latent": gpt_cond_latent.cpu().squeeze().half().tolist(),
-            "speaker_embedding": speaker_embedding.cpu().squeeze().half().tolist()
+            "gpt_cond_latent": gpt_cond_latent.cpu().half().tolist(),
+            "speaker_embedding": speaker_embedding.cpu().half().tolist()
         }
 
         # Clean up temporary file
@@ -431,6 +431,15 @@ async def store_latents(request: StoreLatentsRequest):
         json_file_path = os.path.join(language_folder, f"{request.speaker_name.lower()}.json")
         with open(json_file_path, 'w') as json_file:
             json.dump(request.latents, json_file)
+
+        # Hot-load latents into cache so they are immediately usable
+        try:
+            gpt_cond_latent, speaker_embedding = XTTS.load_latents_from_json(json_file_path)
+            cache_key = f"{request.speaker_name.lower()}_{request.language.lower()}"
+            XTTS.latents_cache[cache_key] = (gpt_cond_latent, speaker_embedding)
+            logger.info(f"Latents hot-loaded into cache for {cache_key}")
+        except Exception as e:
+            logger.error(f"Failed to hot-load latents into cache: {e}")
         
         logger.info(f"Latents stored for {request.speaker_name} in {request.language} at {json_file_path}")
         

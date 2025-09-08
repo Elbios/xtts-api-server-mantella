@@ -266,13 +266,23 @@ class TTSWrapper:
         speaker_name = speaker_name.lower()
         speaker_key = f"{speaker_name}_{language_code}"
         if speaker_key not in self.latents_cache:
-            logger.info(f"Creating latents for {speaker_name} in {language_code}: {speaker_wav}")
-            gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(speaker_wav)
-            # Move latents to the current device
-            gpt_cond_latent = gpt_cond_latent.to(self.device)
-            speaker_embedding = speaker_embedding.to(self.device)
-            self.latents_cache[speaker_key] = (gpt_cond_latent, speaker_embedding)
-            self.save_latents_to_json(speaker_name, language_code)
+            # Try loading from JSON first (hot path for /store_latents and pre-existing JSONs)
+            json_path = os.path.join(self.latent_speaker_folder, language_code, f"{speaker_name}.json")
+            if os.path.exists(json_path):
+                logger.info(f"Loading latents from JSON for {speaker_name} in {language_code}")
+                gpt_cond_latent, speaker_embedding = self.load_latents_from_json(json_path)
+                # Ensure tensors are on the current device
+                gpt_cond_latent = gpt_cond_latent.to(self.device)
+                speaker_embedding = speaker_embedding.to(self.device)
+                self.latents_cache[speaker_key] = (gpt_cond_latent, speaker_embedding)
+            else:
+                logger.info(f"Creating latents for {speaker_name} in {language_code}: {speaker_wav}")
+                gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(speaker_wav)
+                # Move latents to the current device
+                gpt_cond_latent = gpt_cond_latent.to(self.device)
+                speaker_embedding = speaker_embedding.to(self.device)
+                self.latents_cache[speaker_key] = (gpt_cond_latent, speaker_embedding)
+                self.save_latents_to_json(speaker_name, language_code)
         else:
             # Ensure cached latents are on the current device
             gpt_cond_latent, speaker_embedding = self.latents_cache[speaker_key]
